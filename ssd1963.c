@@ -42,10 +42,11 @@ static void ssd_sleep(unsigned ms)
 #define STR(x)			#x
 #define XSTR(x)			STR(x)
 
-#define SSD_VCO_MIN		250000000
-#define SSD_VCO_MAX		800000000
-#define SSD_SYS_MIN		  1000000
-#define SSD_SYS_MAX		110000000
+/* in kHz */
+#define SSD_VCO_MIN		250000
+#define SSD_VCO_MAX		800000
+#define SSD_SYS_MIN		  1000
+#define SSD_SYS_MAX		110000
 
 uint_least32_t ssd_iv_get_vco_freq(const struct ssd_init_vector *iv)
 {
@@ -62,24 +63,21 @@ uint_least32_t ssd_iv_get_sys_freq(const struct ssd_init_vector *iv)
 	return iv->pll_as_sysclk ? ssd_iv_get_pll_freq(iv) : iv->in_clk_freq;
 }
 
+/* kHz, 19 bit */
 uint_least32_t ssd_iv_get_pixel_freq_frac(const struct ssd_init_vector *iv)
 {
 	uint_least32_t f;
 
-	f  = ssd_iv_get_vco_freq(iv);
-	if (f > SSD_VCO_MAX)
+	f   = ssd_iv_get_vco_freq(iv); /* kHz */
+	if (f > SSD_VCO_MAX)           /* 20 bit */
 		return 0;
-	f /= 1000 << 8;       /*  2^8 kHz, 12 bit */
-	f *= iv->lshift_mult; /* (2^8 kHz)/2^20 = 2^(-12) kHz, 32 bit */
-	f /= iv->pll_n;       /*  2^(-12) kHz, 32 bit */
-#if 0
-	f  = ((f + (1 << 8)) >> 7) * (1000 >> 3) >> 2;
-#else
-	f  = (f + (1 << 11)) >> 12; /* kHz, 20 bit */
-	f *= 1000;            /* Hz, 30 bit */
-#endif
+	f >>= 8;               /*  2^8 kHz, 12 bit */
+	f  *= iv->lshift_mult; /* (2^8 kHz)/2^20 = 2^(-12) kHz, 32 bit */
+	f  /= iv->pll_n;       /*  2^(-12) kHz, 32 bit (will be less) */
+	f   = (f + (1 << 11)) >> 12; /* kHz, 20 bit */
+
 	if (iv->lcd_flags & SSD_LCD_MODE_SERIAL)
-		f <<= 2;      /* Hz, 32 bit */
+		f <<= 2;       /* kHz, 22 bit */
 
 	return f;
 }
@@ -88,22 +86,28 @@ uint_least32_t ssd_iv_calc_pixel_freq(
 	const struct ssd_init_vector *iv,
 	uint_least16_t refresh_rate
 ) {
-	return (uint_least32_t)refresh_rate * iv->ht * iv->vt;
+	return (uint_least32_t)refresh_rate * iv->ht * iv->vt / 1000; /* kHz */
 }
 
 uint_least32_t ssd_iv_calc_lshift_mult(
 	const struct ssd_init_vector *iv,
 	uint_least32_t pixel_freq
 ) {
-	uint_least64_t pclk = pixel_freq;
+	uint_least32_t pclk = pixel_freq;
+	uint_least32_t pll_32;
+	uint_least32_t frac;
 
-	if (iv->lcd_flags & SSD_LCD_MODE_SERIAL)
-		pclk <<= 18;
-	else
-		pclk <<= 20;
+	if (iv->lcd_flags & SSD_LCD_MODE_SERIAL) /* 2^(-2) kHz, 19 bit */
+		pclk <<= 15 - 2;                 /* 2^(-15) kHz, 32 bit */
+	else                                     /* 2^(0) kHz, 17 bit */
+		pclk <<= 15;                     /* 2^(-15) kHz, 32 bit */
 
-	/* divide scaled pixel clock by PLL freq */
-	return pclk * iv->pll_n / ssd_iv_get_vco_freq(iv);
+	pll_32 = ssd_iv_get_pll_freq(iv) >> 5;   /* 2^5 kHz, 17-5 = 12 bit */
+	/* divide scaled pixel clock by PLL freq:
+	 * (pclk * 2^(-15) kHz)/(pll * 2^5 kHz) = 2^(-20), 20 bit */
+	frac = pclk / pll_32;
+
+	return frac;
 }
 
 void ssd_iv_set_hsync(
@@ -140,6 +144,47 @@ void ssd_iv_set_display(struct ssd_init_vector *iv, const struct ssd_display *d)
 	ssd_iv_set_vsync(iv,
 		d->vert.visible, d->vert.front, d->vert.sync, d->vert.back,
 		0);
+}
+
+void ssd_iv_print(const struct ssd_init_vector *iv)
+{
+	uint_least32_t pclk      = ssd_iv_get_pixel_freq_frac(iv); /* 19 bit */
+	uint_least32_t pclk_hz   =  pclk * 1000; /* 29 bit */
+	uint_least32_t pclk_hz_d =  pclk_hz / (iv->ht * iv->vt);
+	uint_least32_t pclk_hz_m =  pclk_hz % (iv->ht * iv->vt);
+	uint_least32_t pclk_hz_f = (pclk_hz_m * 1000) / (iv->ht * iv->vt);
+
+	printk(KERN_INFO SSD1963_FB_DRIVER_NAME ": "
+		"in_clk_freq: %u kHz, "
+		"PLL: %u/%u -> %u kHz, "
+		"VCO: %u kHz\n",
+		iv->in_clk_freq,
+		iv->pll_m, iv->pll_n, ssd_iv_get_pll_freq(iv),
+		ssd_iv_get_vco_freq(iv));
+
+	printk(KERN_INFO SSD1963_FB_DRIVER_NAME ": "
+		"sys: %u kHz, "
+		"px clk: %u kHz, "
+		"lshift: %u, rate: %u.%03u Hz\n",
+		ssd_iv_get_sys_freq(iv),
+		pclk,
+		iv->lshift_mult, pclk_hz_d, pclk_hz_f);
+
+	printk(KERN_INFO SSD1963_FB_DRIVER_NAME ": "
+		"ht, hps, hpw, lps, lpspp: %hu %hu %hu %hu %hu\n",
+		iv->ht, iv->hps, iv->hpw, iv->lps, iv->lpspp);
+
+	printk(KERN_INFO SSD1963_FB_DRIVER_NAME ": "
+		"vt, vps, vpw, fps       : %hu %hu %hu %hu\n",
+		iv->vt, iv->vps, iv->vpw, iv->fps);
+
+	printk(KERN_INFO SSD1963_FB_DRIVER_NAME ": "
+		"hdp: %hu, "
+		"vdp: %hu, "
+		"lcd-flags: 0x%02x 0x%02x 0x%02x\n",
+		iv->hdp,
+		iv->vdp,
+		iv->lcd_flags >> 16, (iv->lcd_flags >> 8) & 0xff, iv->lcd_flags & 0xff);
 }
 
 const char * ssd_strerr(enum ssd_err err)
@@ -198,21 +243,21 @@ enum ssd_err ssd_iv_init(
 		return r;
 
 	if (refresh_rate)
-		pclk      = ssd_iv_calc_pixel_freq(iv, refresh_rate);
+		pclk      = ssd_iv_calc_pixel_freq(iv, refresh_rate); /* kHz */
 	else if (d->pxclk_typ)
-		pclk      = d->pxclk_typ;
+		pclk      = d->pxclk_typ;                             /* kHz */
 	else
 		return SSD_ERR_PXCLK_UNAVAIL;
 
-	if ((d->pxclk_min && pclk < d->pxclk_min) ||
-	    (d->pxclk_max && pclk > d->pxclk_max))
+	if ((d->pxclk_min && pclk * 1000 < d->pxclk_min) ||
+	    (d->pxclk_max && pclk * 1000 > d->pxclk_max))
 		r = SSD_ERR_PXCLK_OOR;
 
 	iv->lshift_mult   = ssd_iv_calc_lshift_mult(iv, pclk);
-	pclk              = ssd_iv_get_pixel_freq_frac(iv) >> 20;
+	pclk              = ssd_iv_get_pixel_freq_frac(iv);           /* kHz */
 
-	if ((d->pxclk_min && pclk < d->pxclk_min) ||
-	    (d->pxclk_max && pclk > d->pxclk_max))
+	if ((d->pxclk_min && pclk * 1000 < d->pxclk_min) ||
+	    (d->pxclk_max && pclk * 1000 > d->pxclk_max))
 		r = SSD_ERR_PXCLK_OOR;
 
 	return r;

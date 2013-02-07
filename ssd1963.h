@@ -68,7 +68,7 @@ enum ssd_interface_fmt {
  * appropriately because in this structure the more sensible non-adjusted
  * values are stored to ease calculations. */
 struct ssd_init_vector {
-	uint_least32_t in_clk_freq; /* XTAL or ext. clock input, both OR'ed in chip */
+	uint_least32_t in_clk_freq; /* kHz, XTAL or ext. clock input, both OR'ed in chip */
 	uint_least8_t pll_m, pll_n;
 	uint_least16_t ht, hps, hpw, lps, lpspp;
 	uint_least16_t vt, vps, vpw, fps;
@@ -109,22 +109,23 @@ struct ssd_display {
 	struct ssd_timings {
 		uint_least16_t visible, front, sync, back;
 	} hori, vert;
-	uint_least32_t pxclk_min, pxclk_typ, pxclk_max;
+	uint_least32_t pxclk_min, pxclk_typ, pxclk_max; /* Hz */
 };
 
 /* --------------------------------------------------------------------------
  * low level init functions
  * -------------------------------------------------------------------------- */
 
+/* all frequencies below are in kHz */
 uint_least32_t ssd_iv_get_vco_freq(const struct ssd_init_vector *iv);
 uint_least32_t ssd_iv_get_pll_freq(const struct ssd_init_vector *iv);
 uint_least32_t ssd_iv_get_sys_freq(const struct ssd_init_vector *iv);
 
-/* returns the pixel clock frequency in 2**20 Hz calculated using the current
+/* returns the pixel clock frequency in kHz calculated using the current
  * lshift_freq value from iv */
 uint_least32_t ssd_iv_get_pixel_freq_frac(const struct ssd_init_vector *iv);
 
-/* in Hz */
+/* in kHz */
 uint_least32_t ssd_iv_calc_pixel_freq(
 	const struct ssd_init_vector *iv,
 	uint_least16_t refresh_rate
@@ -134,7 +135,7 @@ uint_least32_t ssd_iv_calc_pixel_freq(
  * hsync/vsync settings and PLL frequency already set in iv */
 uint_least32_t ssd_iv_calc_lshift_mult(
 	const struct ssd_init_vector *iv,
-	uint_least32_t pixel_freq
+	uint_least32_t pixel_freq /* kHz */
 );
 
 void ssd_iv_set_hsync(
