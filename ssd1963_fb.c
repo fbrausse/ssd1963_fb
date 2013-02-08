@@ -43,9 +43,9 @@ struct ssd1963_fb {
 static struct ssd1963_fb this_fb;
 
 /* 22-25, 28-31 */
-#define BUS8(v)		(((v) & 0x0f) << 22 | ((v) & 0xf0) << (28 - 4))
+#define BUS8(v)		(((u32)(v) & 0x0f) << 22 | ((u32)(v) & 0xf0) << (28 - 4))
 /* 22-25, 27-31 */
-#define BUS9(v)		(((v) & 0x0f) << 22 | ((v) & 0x1f0) << (27 - 4))
+#define BUS9(v)		(((u32)(v) & 0x0f) << 22 | ((u32)(v) & 0x1f0) << (27 - 4))
 
 #define BUS_DC_MASK	(1 << 17)
 #define BUS_WR_MASK	(1 << 18)
@@ -55,7 +55,7 @@ static struct ssd1963_fb this_fb;
 // #define BUS_CMD_MASK	BUS(0xff) /* commands are only 8 bit wide */
 #define BUS_CTL_MASK	(BUS_DC_MASK | BUS_WR_MASK)
 
-#if 0
+#if 1
 #include <mach/platform.h>
 
 #define GPIO_CLR_BANK0	(__io_address(GPIO_BASE) + 0x28)
@@ -109,25 +109,27 @@ void ssd_wr_slow_cmd(u8 v)
 
 /* fast bus access */
 
+static inline void ssd1963_bus_wr0(u32 d)
+{
+	/* __iowmb() would've been called at cmd submission time already and
+	 * ARM doesn't reorder writes to the same subsystem */
+	writel_relaxed((~d & BUS_MASK) | BUS_WR_MASK, GPIO_CLR_BANK0);
+	writel_relaxed(  d & BUS_MASK               , GPIO_SET_BANK0);
+	writel_relaxed(                  BUS_WR_MASK, GPIO_SET_BANK0);
+}
+
 static inline void ssd1963_bus_wr(u32 v)
 {
-	u32 d = BUS(v);
-	writel((~d & BUS_MASK) | BUS_WR_MASK, GPIO_CLR_BANK0);
-	writel(  d & BUS_MASK               , GPIO_SET_BANK0);
-	writel(                  BUS_WR_MASK, GPIO_SET_BANK0);
+	ssd1963_bus_wr0(BUS(v));
 }
 
 static inline void ssd1963_wr_cmd(u8 x)
 {
-	if (0)
-		print_debug("%02x\n", x);
 	ssd_wr_slow_cmd(x);
 }
 
 static inline void ssd1963_wr_data(u8 x)
 {
-	if (0)
-		print_debug("%02x", x);
 	ssd1963_bus_wr(x);
 }
 #else
@@ -217,6 +219,7 @@ static int ssd1963_fb_set_bitfields(struct fb_var_screeninfo *var)
 			var->blue.length    = 5;
 			break;
 		}
+		/* xRGB */
 		var->blue.offset   = 0;
 		var->green.offset  = var->blue.offset  + var->blue.length;
 		var->red.offset    = var->green.offset + var->green.length;
@@ -308,8 +311,6 @@ static int ssd1963_fb_check_var(struct fb_var_screeninfo *var,
 		return -EINVAL;
 	}
 
-	this_fb.iv.lcd_flags = this_fb.pdata->lcd.lcd_flags; /* TODO: to init() */
-
 	ssd_iv_set_hsync(&this_fb.iv, xres, var->left_margin,
 			 var->hsync_len, var->right_margin, 0, 0);
 	ssd_iv_set_vsync(&this_fb.iv, yres, var->upper_margin,
@@ -361,34 +362,10 @@ static int ssd1963_fb_set_par(struct fb_info *info)
 
 	ssd_iv_print(iv);
 
-#if 1
 	err = ssd_init_display(iv);
 	print_debug("init_display: %s\n", ssd_strerr(err));
-#else
-	/* equiv to ssd_init_display() */
 
-	SSD_SET_LSHIFT_FREQ(iv->lshift_mult - 1);
-
-	SSD_SET_LCD_MODE(
-		(iv->lcd_flags >> 16),
-		(iv->lcd_flags >>  8) & 0xff,
-		iv->hdp - 1,
-		iv->vdp - 1,
-		(iv->lcd_flags      ) & 0xff);
-
-	SSD_SET_HORI_PERIOD(
-		iv->ht - 1,
-		iv->hps + (iv->lcd_flags & SSD_LCD_MODE_SERIAL ? iv->lpspp : 0),
-		iv->hpw - 1,
-		iv->lps,
-		iv->lpspp);
-
-	SSD_SET_VERT_PERIOD(
-		iv->vt - 1,
-		iv->vps,
-		iv->vpw - 1,
-		iv->fps);
-#endif
+	SSD_SET_SCROLL_AREA(0, info->var.yres, 0);
 
 	if (info->var.bits_per_pixel <= 8)
 		this_fb.info.fix.visual = FB_VISUAL_PSEUDOCOLOR;
@@ -410,59 +387,6 @@ static int ssd1963_fb_set_par(struct fb_info *info)
  * SSD_DATA_16_565   : [rgb].length >= 565, bpp >= 16
  * SSD_DATA_18       : [rgb].length >= 666, bpp >= 18 (24)
  * SSD_DATA_24       : [rgb].length >= 888, bpp >= 24 */
-#if 0
-static void ssd1963_wr_px8(u32 color)
-{
-	ssd1963_wr_data((color >> 16) & 0xff);
-	ssd1963_wr_data((color >>  8) & 0xff);
-	ssd1963_wr_data((color >>  0) & 0xff);
-}
-
-static void ssd1963_wr_px9(u32 color)
-{
-	ssd1963_wr_data((color >> 16-( 9-6)) & 0x1f8 | (color >>  8-(3-6)) & 0x007);
-	ssd1963_wr_data((color >>  8-(12-6)) & 0x1c0 | (color >>  0+(8-6)) & 0x03f);
-}
-
-static void ssd1963_wr_px12(u32 color)
-{
-	ssd1963_wr_data((color >> 16-(12-8)) & 0xff0 | (color >>  8-(4-8)) & 0x00f);
-	ssd1963_wr_data((color >>  8-(16-8)) & 0xf00 | (color >>  0-(8-8)) & 0x0ff);
-}
-
-static void ssd1963_wr_px16_2(u32 color1, u32 color2)
-{
-	ssd1963_wr_data((color1 >> 8) & 0xffff);
-	ssd1963_wr_data((color1 << 8) & 0xff00 | (color2 >> 16) & 0x00ff);
-	ssd1963_wr_data((color2     ) & 0xffff);
-}
-
-static void ssd1963_wr_px16_565(u16 color)
-{
-	ssd1963_wr_data(color);
-}
-
-static void ssd1963_wr_px16(u32 color)
-{
-	ssd1963_wr_data(
-		(color >> 16-(16-8)) & 0xf800 |
-		(color >>  8-(11-8)) & 0x07e0 |
-		(color >>  0-( 8-8)) & 0x001f);
-}
-
-static void ssd1963_wr_px18(u32 color)
-{
-	ssd1963_wr_data(
-		(color >> 16-(18-8)) & 0x3f000 |
-		(color >>  8-(12-8)) & 0x00fc0 |
-		(color >>  0-( 6-8)) & 0x0003f);
-}
-
-static void ssd1963_wr_px24(u32 color)
-{
-	ssd1963_wr_data(color & 0xffffff);
-}
-#endif
 
 static struct ssd1963_px_wr {
 	u8 color1;
@@ -477,10 +401,52 @@ static void ssd1963_px_flush(void)
 	}
 }
 
-/* TODO? maybe make this a callback funptr in pdata */
-static void ssd1963_px_wr(u32 color)
+#if 1
+static inline void ssd1963_px_wr8(u32 color)
 {
-	switch (this_fb.pdata->bus_fmt) {
+	ssd1963_bus_wr(color >> 16);
+	ssd1963_bus_wr(color >>  8);
+	ssd1963_bus_wr(color);
+}
+
+static inline void ssd1963_px_wr9(u32 color)
+{
+	ssd1963_bus_wr(color >> 9);
+	ssd1963_bus_wr(color);
+}
+
+static inline void ssd1963_px_wr12(u32 color)
+{
+	ssd1963_bus_wr(color >> 12);
+	ssd1963_bus_wr(color);
+}
+
+static inline void ssd1963_px_wr16_packed(u32 color)
+{
+	if (wr.color1_valid) {
+		ssd1963_bus_wr(
+			((u16)wr.color1 << 8) |
+			((color >> 16) & 0x00ff));
+		ssd1963_bus_wr(color);
+	} else {
+		ssd1963_bus_wr(color >> 8);
+		wr.color1 = color;
+	}
+	wr.color1_valid = !wr.color1_valid;
+}
+
+static inline void ssd1963_px_wr1(u32 color)
+{
+	ssd1963_bus_wr(color);
+}
+
+static void (*ssd1963_px_wr)(u32 color);
+// #define ssd1963_px_wr(c)	ssd1963_px_wr8(c)
+#else
+/* TODO? maybe make this a callback funptr in pdata */
+static inline void ssd1963_px_wr(enum ssd_interface_fmt bus_fmt, u32 color)
+{
+	switch (bus_fmt) {
 	case SSD_DATA_8:
 		ssd1963_bus_wr(color >> 16);
 		ssd1963_bus_wr(color >>  8);
@@ -512,25 +478,11 @@ static void ssd1963_px_wr(u32 color)
 		break;
 	}
 }
-
-static ssize_t ssd1963_fb_read(struct fb_info *info, char __user *buf,
-			       size_t count, loff_t *ppos)
-{
-	print_debug("reading %zu bytes to user %p at %llu\n", count, buf, *ppos);
-	*ppos += count;
-	return count;
-}
-
-static ssize_t ssd1963_fb_write(struct fb_info *info, const char __user *buf,
-				size_t count, loff_t *ppos)
-{
-	print_debug("writing %zu bytes to user %p at %llu\n", count, buf, *ppos);
-	*ppos += count;
-	return count;
-}
+#endif
 
 static void ssd1963_fb_fillrect(struct fb_info *p, const struct fb_fillrect *rect)
 {
+	u32 c = rect->color;
 	u32 n;
 
 	if (p->state != FBINFO_STATE_RUNNING)
@@ -541,13 +493,20 @@ static void ssd1963_fb_fillrect(struct fb_info *p, const struct fb_fillrect *rec
 			"defaulting to ROP_COPY\n",
 			rect->rop);
 
+	if (p->fix.visual == FB_VISUAL_TRUECOLOR ||
+	    p->fix.visual == FB_VISUAL_DIRECTCOLOR)
+		c = ((u32 *)p->pseudo_palette)[c];
+/*
+	print_debug("rect %ux%u @ %u,%u w/ color %08x\n",
+		rect->width, rect->height, rect->dx, rect->dy, rect->color);
+*/
 	SSD_SET_PAGE_ADDRESS(rect->dy, rect->dy + rect->height - 1);
 	SSD_SET_COLUMN_ADDRESS(rect->dx, rect->dx + rect->width - 1);
 	SSD_WRITE_MEMORY_START();
 
 	wr.color1_valid = 0;
 	for (n = rect->width * rect->height; n; n--)
-		ssd1963_px_wr(rect->color);
+		ssd1963_px_wr(c);
 	ssd1963_px_flush();
 }
 
@@ -559,7 +518,11 @@ static void ssd1963_fb_imageblit(struct fb_info *p, const struct fb_image *image
 
 	if (p->state != FBINFO_STATE_RUNNING)
 		return;
-
+/*
+	print_debug("img %ux%u @ %u,%u w/ depth %d, color fg/bg %08x / %08x, cmap: %d %d\n",
+		image->width, image->height, image->dx, image->dy,
+		image->depth, fg, bg, image->cmap.start, image->cmap.len);
+*/
 	SSD_SET_PAGE_ADDRESS(image->dy, image->dy + image->height - 1);
 	SSD_SET_COLUMN_ADDRESS(image->dx, image->dx + image->width - 1);
 	SSD_WRITE_MEMORY_START();
@@ -567,15 +530,20 @@ static void ssd1963_fb_imageblit(struct fb_info *p, const struct fb_image *image
 	wr.color1_valid = 0;
 	if (image->depth == 1) {
 		u32 spitch = (image->width + 7) / 8;
+		u32 fg = image->fg_color, bg = image->bg_color;
 		u32 y, x;
+		if (p->fix.visual == FB_VISUAL_TRUECOLOR ||
+		    p->fix.visual == FB_VISUAL_DIRECTCOLOR) {
+			fg = palette[fg];
+			bg = palette[bg];
+		}
 		for (y = image->height; y; y--, src += spitch) {
 			const u8 *s = src;
-			u8 l = 8;
+			u8 l = 8, v = *s;
 			for (x = image->width; x; x--) {
-				color = (*s & (1 << --l)) ? image->fg_color : image->bg_color;
-				ssd1963_px_wr(color);
+				ssd1963_px_wr(v & (1 << --l) ? fg : bg);
 				if (!l) {
-					s++;
+					v = *++s;
 					l = 8;
 				}
 			}
@@ -593,14 +561,14 @@ static void ssd1963_fb_imageblit(struct fb_info *p, const struct fb_image *image
 	}
 	ssd1963_px_flush();
 }
-
+/*
 static struct {
 	unsigned sleep   : 1;
 	unsigned idle    : 1;
 	unsigned partial : 1;
 	unsigned display : 1;
 } ssd1963_mode;
-
+*/
 static int ssd1963_fb_blank(int blank, struct fb_info *info)
 {
 	print_debug("blank: %d\n", blank);
@@ -622,26 +590,87 @@ static int ssd1963_fb_blank(int blank, struct fb_info *info)
 	return 0;
 }
 
+static inline u32 convert_bitfield(int val, struct fb_bitfield *bf)
+{
+	unsigned int mask = (1 << bf->length) - 1;
+	return (val >> (16 - bf->length) & mask) << bf->offset;
+}
+
+static int ssd1963_fb_setcolreg(unsigned int regno, unsigned int red,
+				unsigned int green, unsigned int blue,
+				unsigned int transp, struct fb_info *info)
+{
+	print_debug("setcolreg %d:(%02x,%02x,%02x,%02x) %x\n",
+		regno, red, green, blue, transp, info->fix.visual);
+	if (info->var.bits_per_pixel <= 8) {
+		if (0 && regno < 256) {
+			/* blue [0:4], green [5:10], red [11:15] */
+			/*
+			info->cmap[regno] = ((red   >> (16-5)) & 0x1f) << 11 |
+					    ((green >> (16-6)) & 0x3f) << 5  |
+					    ((blue  >> (16-5)) & 0x1f) << 0;*/
+		}
+		/* Hack: we need to tell GPU the palette has changed, but currently bcm2708_fb_set_par takes noticable time when called for every (256) colour */
+		/* So just call it for what looks like the last colour in a list for now. */
+		if (regno == 15 || regno == 255)
+			ssd1963_fb_set_par(info);
+        } else if (regno < 16) {
+		this_fb.cmap[regno] =
+			convert_bitfield(transp, &info->var.transp) |
+			convert_bitfield(blue, &info->var.blue)     |
+			convert_bitfield(green, &info->var.green)   |
+			convert_bitfield(red, &info->var.red);
+	}
+	return regno > 255;
+}
+
+static int ssd1963_fb_pan_display(struct fb_var_screeninfo *var,
+				  struct fb_info *info)
+{
+	// print_debug("yoff: %u\n", var->yoffset);
+	SSD_SET_SCROLL_START(var->yoffset);
+	return 0;
+}
+
+static void ssd1963_fb_copyarea(struct fb_info *info,
+				const struct fb_copyarea *region)
+{
+	/* TODO: no implementation yet */
+	print_debug("%u,%u -> %u,%u, size: %ux%u\n",
+		region->sx, region->sy, region->dx, region->dy,
+		region->width, region->height);
+}
+
+static ssize_t ssd1963_fb_read(struct fb_info *info, char __user *buf,
+			       size_t count, loff_t *ppos)
+{
+	print_debug("reading %zu bytes to user %p at %llu\n", count, buf, *ppos);
+	*ppos += count;
+	return count;
+}
+
+static ssize_t ssd1963_fb_write(struct fb_info *info, const char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	print_debug("writing %zu bytes to user %p at %llu\n", count, buf, *ppos);
+	*ppos += count;
+	return count;
+}
+
 static struct fb_ops ssd1963_fb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_check_var	= ssd1963_fb_check_var,
 	.fb_set_par	= ssd1963_fb_set_par,
-	//.fb_setcolreg	= ssd1963_fb_setcolreg,
-	//.fb_blank	= ssd1963_fb_blank,
+	.fb_setcolreg	= ssd1963_fb_setcolreg,
+	.fb_blank	= ssd1963_fb_blank,
 	.fb_fillrect	= ssd1963_fb_fillrect,
-	.fb_copyarea	= NULL,
 	.fb_imageblit	= ssd1963_fb_imageblit,
-	/* For framebuffers with strange non linear layouts or that do not
-	 * work with normal memory mapped access
-	 */
+	.fb_pan_display	= ssd1963_fb_pan_display,
+	.fb_copyarea	= ssd1963_fb_copyarea,
 	.fb_read	= ssd1963_fb_read,
 	.fb_write	= ssd1963_fb_write,
-	/* pan display *//*
-	int (*fb_pan_display)(struct fb_var_screeninfo *var, struct fb_info *info);*/
 	/* Rotates the display *//*
 	void (*fb_rotate)(struct fb_info *info, int angle);*/
-	/* wait for blit idle, optional *//*
-	int (*fb_sync)(struct fb_info *info);*/
 };
 
 static int ssd1963_fb_register(void)
@@ -653,7 +682,8 @@ static int ssd1963_fb_register(void)
 
 	fb->info.fbops			= &ssd1963_fb_ops;
 	fb->info.flags			= FBINFO_FLAG_DEFAULT
-					| FBINFO_HWACCEL_YWRAP;
+					| FBINFO_HWACCEL_YWRAP
+					| FBINFO_HWACCEL_COPYAREA; /* TODO: hack since SCROLL_WRAP_REDRAW isn't implemented in fbcon.c yet :/ */
 	fb->info.pseudo_palette		= fb->cmap;
 
 	strncpy(fb->info.fix.id, ssd1963_name, sizeof(fb->info.fix.id));
@@ -704,11 +734,20 @@ static int ssd1963_fb_register(void)
 	fb->iv.pll_m			= pdata->pll_m;
 	fb->iv.pll_n			= pdata->pll_n;
 
-	/* TODO: ssd_pll_init && set bus_fmt and addr_mode || fail */
-
-	/*
-	 * Allocate colourmap.
-	 */
+	switch (pdata->bus_fmt) {
+	case SSD_DATA_8:
+		ssd1963_px_wr = ssd1963_px_wr8; break;
+	case SSD_DATA_9:
+		ssd1963_px_wr = ssd1963_px_wr9; break;
+	case SSD_DATA_12:
+		ssd1963_px_wr = ssd1963_px_wr12; break;
+	case SSD_DATA_16_PACKED:
+		ssd1963_px_wr = ssd1963_px_wr16_packed; break;
+	case SSD_DATA_16_565:
+	case SSD_DATA_18:
+	case SSD_DATA_24:
+		ssd1963_px_wr = ssd1963_px_wr1; break;
+	}
 
 	ret = ssd1963_fb_check_var(&fb->info.var, &fb->info);
 	print_debug("SSD1963FB: set_var: %d\n", ret);
@@ -718,10 +757,20 @@ static int ssd1963_fb_register(void)
 	err = ssd_init_pll(&fb->iv);
 	print_debug("init_pll: %s\n", ssd_strerr(err));
 
+	SSD_SET_ADDRESS_MODE(pdata->lcd_addr_mode);
+	SSD_SET_PIXEL_DATA_INTERFACE(pdata->bus_fmt);
+
 	ret = ssd1963_fb_set_par(&fb->info);
 	print_debug("SSD1963FB: set_par: %d\n", ret);
 	if (ret)
 		goto fail;
+
+	fb_set_cmap(&fb->info.cmap, &fb->info);
+
+	/* clear framebuffer */
+	ssd1963_fb_fillrect(&fb->info, &(struct fb_fillrect){
+		0, 0, fb->info.var.xres, fb->info.var.yres, 0x000000, ROP_COPY
+	});
 
 	ret = register_framebuffer(&fb->info);
 	print_debug("SSD1963FB: register framebuffer (%d)\n", ret);
@@ -735,10 +784,10 @@ out:
 
 static int gpiochip_match(struct gpio_chip *chip, void *data)
 {
-	return !strcmp(chip->label, data);
+	return !strcmp(chip->label, (const char *)data);
 }
 
-/* original definition to be found in arch/arm/mach-bcm2708/*.c */
+/* original definition to be found in arch/arm/mach-bcm2708/bcm2708_gpio.c */
 #define BCM2708_GPIO_LABEL	"bcm2708_gpio"
 
 static void ssd1963_gpio_bus_release(struct device *dev, u32 pins)
@@ -798,9 +847,6 @@ out:
 	return ret;
 }
 
-/* TODO: rename BUS_MASK to BUS_DATA_MASK, BUS() to BUS_DATA() and rework the
- *       below gpio pin code */
-
 static int ssd1963_fb_probe(struct platform_device *pdev)
 {
 	struct ssd1963_platform_data *pdata = pdev->dev.platform_data;
@@ -852,6 +898,8 @@ static int ssd1963_fb_remove(struct platform_device *pdev)
 	// platform_set_drvdata(pdev, NULL);
 
 	unregister_framebuffer(&this_fb.info);
+
+	SSD_ENTER_SLEEP_MODE();
 
 	ssd1963_gpio_bus_release(&pdev->dev, BUS_CTL_MASK | BUS_MASK);
 
