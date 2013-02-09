@@ -20,6 +20,7 @@
 #include <linux/gpio.h>
 
 #include "ssd1963_fb.h"
+#include "itdb02.h"
 
 #define DRIVER_NAME		SSD1963_FB_DRIVER_NAME
 #define MODULE_NAME		DRIVER_NAME
@@ -918,8 +919,6 @@ static struct platform_driver ssd1963_fb_driver = {
 		.owner = THIS_MODULE,
 	},
 };
-
-#include "../ssd1963/itdb02.h" /* TODO */
 
 static struct ssd1963_platform_data ssd_pdev_data = {
 	.lcd		= HSD050IDW1_A,

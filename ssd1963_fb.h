@@ -16,8 +16,6 @@ struct ssd1963_platform_data {
 	u32 xtal_freq;
 	u8 pll_m, pll_n;
 	char pll_as_sysclk;
-	/* bus_width: refer to bus_fmt */
-	unsigned gpio_bus[]; /* 0: #WR, 1: D/#C, 2..2+bus_width-1: data 0..bus_width-1 */
 };
 
 #define SSD1963_FB_DRIVER_NAME	"ssd1963_fb"
