@@ -757,6 +757,10 @@ static int ssd1963_fb_register(void)
 
 	err = ssd_init_pll(&fb->iv);
 	print_debug("init_pll: %s\n", ssd_strerr(err));
+	if (err) {
+		ret = -EINVAL;
+		goto fail;
+	}
 
 	SSD_SET_ADDRESS_MODE(pdata->lcd_addr_mode);
 	SSD_SET_PIXEL_DATA_INTERFACE(pdata->bus_fmt);
@@ -785,7 +789,7 @@ out:
 
 static int gpiochip_match(struct gpio_chip *chip, void *data)
 {
-	return !strcmp(chip->label, (const char *)data);
+	return chip->label && !strcmp(chip->label, (const char *)data);
 }
 
 /* original definition to be found in arch/arm/mach-bcm2708/bcm2708_gpio.c */
